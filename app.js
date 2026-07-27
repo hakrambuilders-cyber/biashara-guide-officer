@@ -38,12 +38,26 @@ function getInsights() {
   return insightsCache;
 }
 
-// Regenerates the anonymized aggregate snapshot with a fresh random seed —
-// simulates a new data pull without ever touching individual records (there
-// are none; see engine/analytics.js). Wired to the flag-camouflaged control
-// in the sidebar rather than an obvious "Reset" button.
+// Zeroes out the anonymized aggregate snapshot — every count, percentage,
+// and breakdown goes to 0/empty. There are no individual records to clear
+// (see engine/analytics.js); this only ever resets the synthetic sample.
+// Reload the page to repopulate with a fresh demo dataset. Wired to the
+// flag-camouflaged control in the sidebar rather than an obvious "Reset"
+// button.
 function resetInsights() {
-  insightsCache = buildTRAInsights(generateMockPopulation(240, Date.now()));
+  insightsCache = buildTRAInsights(generateMockPopulation(0));
+}
+
+// Small inline Tanzania flag — used instead of the 🇹🇿 emoji, which several
+// Windows font builds render as a "TZ" letter-code box instead of an actual
+// flag. An SVG renders identically everywhere.
+function tzFlagSvg() {
+  return `<svg viewBox="0 0 30 20" xmlns="http://www.w3.org/2000/svg" role="img" aria-hidden="true">
+    <rect width="30" height="20" fill="#1EB53A"/>
+    <polygon points="0,20 30,0 30,20" fill="#00A3DD"/>
+    <polygon points="0,17.5 0,20 2.5,20 30,2.5 30,0 27.5,0" fill="#FCD116"/>
+    <polygon points="0,18.5 0,20 1.5,20 30,1.5 30,0 28.5,0" fill="#000000"/>
+  </svg>`;
 }
 
 function t(copyObj) {
@@ -111,7 +125,7 @@ function renderDashboard() {
       <aside class="officer-sidebar">
         <div class="sidebar-top">
           <div class="brand-mark">${brandMarkSvg()}</div>
-          <button class="flag-reset" id="flagReset" type="button" title="Refresh" aria-label="Refresh data snapshot">🇹🇿</button>
+          <button class="flag-reset" id="flagReset" type="button" title="Refresh" aria-label="Reset statistics">${tzFlagSvg()}</button>
         </div>
         <div class="sidebar-title">TRA Officer Console</div>
         <div class="sidebar-session">
