@@ -27,7 +27,9 @@ This console tries **real data first**. The citizen app ([biashara-guide.v2](htt
 
 **If there's no real activity yet** (or the fetch fails), it falls back to `engine/analytics.js`'s synthetic population of mock businesses, scored by the *same* compliance/risk logic (`engine/core.js`) a real citizen's profile goes through — clearly labeled "DEMO DATA" instead of "LIVE DATA" so it's never mistaken for the real thing.
 
-**Known gap:** the citizen app doesn't currently collect region, notice type, chat topic, or turnover/benefits-eligibility data as part of its telemetry, so those breakdowns only appear in synthetic/demo mode, not live mode. Extending telemetry to cover them is straightforward but intentionally out of scope for this first pass — see `engine/telemetry.js` in the citizen repo for the exact fields sent today.
+**"Topics Causing the Most Confusion"** is real too: every "Ask Anything" chat message in the citizen app is classified into a topic (TIN / tax / notice / benefits / general — see `engine/core.js#classifyChatTopic` there) and logged to a separate `chat_events` table, topic only, never the message text. It's fetched independently from the profile-based stats, so an older database that hasn't run the `chat_events` migration in `supabase-setup.sql` yet just shows no chat card rather than breaking the rest of the live dashboard.
+
+**Known gap:** the citizen app doesn't currently collect region, notice type, or turnover/benefits-eligibility data as part of its telemetry, so those breakdowns only appear in synthetic/demo mode, not live mode. Extending telemetry to cover them is straightforward but intentionally out of scope for this pass — see `engine/telemetry.js` in the citizen repo for the exact fields sent today.
 
 ## Code organization
 

@@ -9,7 +9,7 @@
 -- docs/FUNCTIONAL_SPEC.md's "aggregate access by default" rule as an
 -- actual database constraint, not just a UI convention.
 
-create table public.guidance_events (
+create table if not exists public.guidance_events (
   id uuid primary key default gen_random_uuid(),
   created_at timestamptz not null default now(),
   sector text,
@@ -30,6 +30,7 @@ create table public.guidance_events (
 alter table public.guidance_events enable row level security;
 
 -- Anonymous clients (the citizen app) may insert, never select.
+drop policy if exists "anon can insert guidance events" on public.guidance_events;
 create policy "anon can insert guidance events"
   on public.guidance_events
   for insert
@@ -102,3 +103,41 @@ $$;
 
 grant execute on function public.get_guidance_overview() to anon;
 grant execute on function public.get_guidance_breakdowns() to anon;
+
+-- ---------------------------------------------------------------------------
+-- Chat events — one row per "Ask Anything" message sent in the citizen app,
+-- topic only (see engine/core.js#classifyChatTopic there), never the
+-- message text. Same access pattern as guidance_events: anon can insert,
+-- never select; the officer console reads only the aggregate function.
+-- ---------------------------------------------------------------------------
+
+create table if not exists public.chat_events (
+  id uuid primary key default gen_random_uuid(),
+  created_at timestamptz not null default now(),
+  topic text not null,
+  language text
+);
+
+alter table public.chat_events enable row level security;
+
+drop policy if exists "anon can insert chat events" on public.chat_events;
+create policy "anon can insert chat events"
+  on public.chat_events
+  for insert
+  to anon
+  with check (true);
+
+create or replace function public.get_chat_topic_breakdown()
+returns table (topic text, count bigint, pct numeric)
+language sql
+security definer
+set search_path = public
+as $$
+  with total as (select count(*)::numeric as n from public.chat_events)
+  select topic, count(*), round(100.0 * count(*) / greatest((select n from total), 1), 0)
+  from public.chat_events
+  group by topic
+  order by count(*) desc;
+$$;
+
+grant execute on function public.get_chat_topic_breakdown() to anon;

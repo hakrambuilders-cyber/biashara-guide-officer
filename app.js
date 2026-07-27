@@ -95,7 +95,22 @@ async function fetchLiveInsights() {
   ]);
 
   const total = Number(overviewRows[0]?.total ?? 0);
-  if (!total) return null; // no real activity yet — let the caller fall back to synthetic
+  if (!total) return null; // no real profile activity yet — let the caller fall back to synthetic
+  // (real chat-only activity with zero profile activity is treated as "not
+  // live yet" for simplicity — the core dashboard has nothing else real to
+  // show in that case; see README "known gaps")
+
+  // Fetched independently: an older database that hasn't had chat_events /
+  // get_chat_topic_breakdown added yet (see supabase-setup.sql) must not
+  // break the rest of the live dashboard — it should just show no chat
+  // breakdown until that migration is run.
+  const chatRows = await callRpc('get_chat_topic_breakdown').catch(() => []);
+
+  const chatTopicBreakdown = chatRows.map((r) => ({
+    topic: r.topic,
+    count: Number(r.count),
+    pct: Number(r.pct)
+  }));
 
   const by = (dimension) => breakdownRows.filter((r) => r.dimension === dimension);
 
@@ -141,7 +156,7 @@ async function fetchLiveInsights() {
     registrationGaps,
     topNextActions,
     noticeBreakdown: [],
-    chatTopicBreakdown: [],
+    chatTopicBreakdown,
     languageSplit,
     channelSplit,
     benefitsSnapshot: null // not collected by the citizen app yet
@@ -357,7 +372,7 @@ function renderDashboard() {
         </div>
 
         ${liveMode ? `
-          <p class="legal-note footer-note">This is real, anonymized aggregate data from the citizen app. Region, notice types, chat topics, and benefits eligibility aren't collected by the citizen app's telemetry yet, so those breakdowns aren't shown here. Access to any individual case requires a logged reason — see Functional Specification §9–§10.</p>
+          <p class="legal-note footer-note">This is real, anonymized aggregate data from the citizen app. Region, notice types, and benefits eligibility aren't collected by the citizen app's telemetry yet, so those breakdowns aren't shown here. Access to any individual case requires a logged reason — see Functional Specification §9–§10.</p>
         ` : `
           <p class="legal-note footer-note">This is synthetic demo data (generated, not real people) shown because there's no real activity yet — it disappears the moment real guidance sessions start arriving. Access to any individual case requires a logged reason — see Functional Specification §9–§10.</p>
         `}
