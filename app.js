@@ -16,10 +16,23 @@
  * sync by hand for now since the two are genuinely separate deployments
  * with no shared build step. If they ever drift, the citizen repo is the
  * source of truth.
+ *
+ * Live data: this console first tries to fetch real, anonymized aggregate
+ * stats from Supabase (see ../supabase-setup.sql) — the same store the
+ * citizen app writes one anonymized event to per session
+ * (engine/telemetry.js there). If there is no real activity yet (or the
+ * fetch fails), it falls back to the synthetic demo population so the
+ * dashboard is never just blank. The anon key below is meant to be public —
+ * see supabase-setup.sql for why it can only insert/read aggregates, never
+ * a raw record.
  */
 
 import { generateMockPopulation, buildTRAInsights } from './engine/analytics.js';
+import { SECTORS } from './engine/knowledge.js';
 import { brandMarkSvg } from './brand.js';
+
+const SUPABASE_URL = 'https://fintumxfjtzvxmscdtdj.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_U6Uc8KXbeAsi0Q_nF9CepA_j0RvgVHv';
 
 const CHANNEL_LABEL = { web: 'Web', ussd: 'USSD', whatsapp: 'WhatsApp' };
 const CHAT_TOPIC_LABEL = {
@@ -29,22 +42,129 @@ const CHAT_TOPIC_LABEL = {
   benefits: 'Benefits / incentive questions',
   general: 'General questions'
 };
+const ACTION_TITLES = {
+  tin: 'Get a TIN',
+  businessRegistration: 'Complete business registration',
+  licence: 'Check the required licence',
+  efd: 'Check whether an EFD machine is required',
+  records: 'Start keeping simple records',
+  filedReturn: 'Learn whether a return applies to you',
+  maintain: 'Keep maintaining good standing'
+};
+const GAP_DIMENSION_TO_KEY = {
+  gap_tin: 'tin',
+  gap_business_registration: 'businessRegistration',
+  gap_licence: 'licence',
+  gap_records: 'records',
+  gap_filed_return: 'filedReturn'
+};
+const GAP_KEY_LABEL = {
+  tin: 'No TIN',
+  businessRegistration: 'No business registration',
+  licence: 'No licence',
+  records: 'No records kept',
+  filedReturn: 'Have not filed a return'
+};
 
 let session = null; // { username } — in-memory only, resets on reload by design
 let insightsCache = null;
+let liveMode = false;
 
-function getInsights() {
-  if (!insightsCache) insightsCache = buildTRAInsights(generateMockPopulation());
-  return insightsCache;
+// ---------------------------------------------------------------------------
+// Live data (Supabase) — falls back to synthetic if empty or unreachable
+// ---------------------------------------------------------------------------
+
+async function callRpc(fn) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${fn}`, {
+    method: 'POST',
+    headers: {
+      apikey: SUPABASE_KEY,
+      Authorization: `Bearer ${SUPABASE_KEY}`,
+      'Content-Type': 'application/json'
+    },
+    body: '{}'
+  });
+  if (!res.ok) throw new Error(`${fn} failed: ${res.status}`);
+  return res.json();
 }
 
-// Zeroes out the anonymized aggregate snapshot — every count, percentage,
-// and breakdown goes to 0/empty. There are no individual records to clear
-// (see engine/analytics.js); this only ever resets the synthetic sample.
-// Reload the page to repopulate with a fresh demo dataset. Wired to the
-// flag-camouflaged control in the sidebar rather than an obvious "Reset"
-// button.
-function resetInsights() {
+async function fetchLiveInsights() {
+  const [overviewRows, breakdownRows] = await Promise.all([
+    callRpc('get_guidance_overview'),
+    callRpc('get_guidance_breakdowns')
+  ]);
+
+  const total = Number(overviewRows[0]?.total ?? 0);
+  if (!total) return null; // no real activity yet — let the caller fall back to synthetic
+
+  const by = (dimension) => breakdownRows.filter((r) => r.dimension === dimension);
+
+  const riskByLevel = Object.fromEntries(by('risk_level').map((r) => [r.key, r]));
+  const riskBreakdown = ['low', 'medium', 'high'].map((level) => ({
+    level,
+    count: Number(riskByLevel[level]?.count ?? 0),
+    pct: Number(riskByLevel[level]?.pct ?? 0)
+  }));
+
+  const sectorBreakdown = by('sector').map((r) => ({
+    name: SECTORS[r.key]?.name.split(' (')[0] ?? r.key,
+    count: Number(r.count),
+    pct: Number(r.pct)
+  }));
+
+  const registrationGaps = breakdownRows
+    .filter((r) => GAP_DIMENSION_TO_KEY[r.dimension])
+    .map((r) => {
+      const key = GAP_DIMENSION_TO_KEY[r.dimension];
+      return { key, label: GAP_KEY_LABEL[key], missing: Number(r.count), pct: Number(r.pct) };
+    })
+    .sort((a, b) => b.pct - a.pct);
+
+  const topNextActions = by('next_action')
+    .map((r) => ({ title: ACTION_TITLES[r.key] ?? r.key, count: Number(r.count), pct: Number(r.pct) }))
+    .sort((a, b) => b.count - a.count);
+
+  const languageSplit = by('language').map((r) => ({ lang: r.key, count: Number(r.count), pct: Number(r.pct) }));
+  const channelSplit = by('channel').map((r) => ({ channel: r.key, count: Number(r.count), pct: Number(r.pct) }));
+
+  return {
+    generatedAt: Date.now(),
+    overview: {
+      total,
+      avgComplianceScore: Number(overviewRows[0]?.avg_compliance_score ?? 0),
+      highRiskShare: Number(overviewRows[0]?.high_risk_share ?? 0),
+      escalationRate: null // not tracked yet — see README "known gaps"
+    },
+    riskBreakdown,
+    sectorBreakdown,
+    regionBreakdown: null, // not collected by the citizen app yet
+    registrationGaps,
+    topNextActions,
+    noticeBreakdown: [],
+    chatTopicBreakdown: [],
+    languageSplit,
+    channelSplit,
+    benefitsSnapshot: null // not collected by the citizen app yet
+  };
+}
+
+// Tries live data first; falls back to a zeroed synthetic sample. This is
+// also what the flag-camouflaged sidebar control re-runs: in live mode that
+// means "check for real activity again" (never destructive — the anon key
+// can only insert, never delete/update, see supabase-setup.sql), in
+// fallback mode it means the demo sample goes to 0/empty.
+async function loadInsights() {
+  try {
+    const live = await fetchLiveInsights();
+    if (live) {
+      liveMode = true;
+      insightsCache = live;
+      return;
+    }
+  } catch {
+    // Network error, CORS issue, or Supabase not set up yet — fall back below.
+  }
+  liveMode = false;
   insightsCache = buildTRAInsights(generateMockPopulation(0));
 }
 
@@ -117,15 +237,19 @@ function renderLogin() {
     </div>`;
 }
 
+function renderLoading() {
+  return `<div class="login-screen"><div class="login-panel"><div class="brand-mark">${brandMarkSvg()}</div><p class="login-sub" style="margin-top:18px;">Loading analytics…</p></div></div>`;
+}
+
 function renderDashboard() {
-  const insights = getInsights();
+  const insights = insightsCache;
 
   return `
     <div class="officer-app">
       <aside class="officer-sidebar">
         <div class="sidebar-top">
           <div class="brand-mark">${brandMarkSvg()}</div>
-          <button class="flag-reset" id="flagReset" type="button" title="Refresh" aria-label="Reset statistics">${tzFlagSvg()}</button>
+          <button class="flag-reset" id="flagReset" type="button" title="Refresh" aria-label="Refresh statistics">${tzFlagSvg()}</button>
         </div>
         <div class="sidebar-title">TRA Officer Console</div>
         <div class="sidebar-session">
@@ -133,18 +257,20 @@ function renderDashboard() {
           <strong>${esc(session.username)}</strong>
         </div>
         <button class="link-btn logout-btn" id="logoutBtn">Log out</button>
-        <p class="legal-note sidebar-note">🧪 Aggregate demo data only — never individual case files. Case-level access requires a logged reason (Functional Specification §9–§10).</p>
+        <p class="legal-note sidebar-note">🧪 Aggregate data only — never individual case files. Case-level access requires a logged reason (Functional Specification §9–§10).</p>
       </aside>
 
       <main class="officer-main">
-        <h1>National Analytics Overview <span class="chip officer-chip">DEMO DATA</span></h1>
-        <p class="lead">Aggregate data from ${insights.overview.total} simulated businesses — no individual name or case data appears here, by design.</p>
+        <h1>National Analytics Overview <span class="chip officer-chip">${liveMode ? 'LIVE DATA' : 'DEMO DATA'}</span></h1>
+        <p class="lead">${liveMode
+          ? `Aggregate data from ${plural(insights.overview.total, 'real, anonymized guidance session', 'real, anonymized guidance sessions')} — no individual name or case data appears here, by design.`
+          : `No real activity yet — showing a synthetic sample of ${insights.overview.total} simulated businesses so the dashboard isn't empty.`}</p>
         <p class="snapshot-time">Data snapshot generated ${timeAgo(insights.generatedAt)}</p>
 
         <div class="kpi-grid">
           <div class="kpi-tile">
             <span class="kpi-value">${insights.overview.total}</span>
-            <span class="kpi-label">Businesses (mock)</span>
+            <span class="kpi-label">${liveMode ? 'Businesses (real)' : 'Businesses (mock)'}</span>
           </div>
           <div class="kpi-tile">
             <span class="kpi-value">${insights.overview.avgComplianceScore}%</span>
@@ -155,7 +281,7 @@ function renderDashboard() {
             <span class="kpi-label">At High Risk</span>
           </div>
           <div class="kpi-tile">
-            <span class="kpi-value">${insights.overview.escalationRate}%</span>
+            <span class="kpi-value">${insights.overview.escalationRate === null ? '—' : insights.overview.escalationRate + '%'}</span>
             <span class="kpi-label">Escalated to TRA</span>
           </div>
         </div>
@@ -176,24 +302,25 @@ function renderDashboard() {
 
           <div class="card">
             <span class="snapshot-label">Biggest Compliance Gaps (National)</span>
-            ${insights.registrationGaps.map(g => barRow(t(g.label), g.pct, plural(g.missing, 'business', 'businesses'))).join('')}
+            ${insights.registrationGaps.map(g => barRow(t(g.label) || g.label, g.pct, plural(g.missing, 'business', 'businesses'))).join('')}
           </div>
 
           <div class="card">
             <span class="snapshot-label">Most Common Next-Best-Actions</span>
             <p class="question-note">Shows where most businesses are stuck — never who they are.</p>
-            ${insights.topNextActions.map(a => barRow(t(a.title), a.pct, plural(a.count, 'business', 'businesses'))).join('')}
+            ${insights.topNextActions.map(a => barRow(t(a.title) || a.title, a.pct, plural(a.count, 'business', 'businesses'))).join('')}
           </div>
 
           <div class="card">
             <span class="snapshot-label">Breakdown by Business Sector Selected</span>
-            ${insights.sectorBreakdown.map(s => barRow(s.name, s.pct, `${plural(s.count, 'business', 'businesses')} · avg score ${s.avgScore}%`)).join('')}
+            ${insights.sectorBreakdown.map(s => barRow(s.name, s.pct, s.avgScore !== undefined ? `${plural(s.count, 'business', 'businesses')} · avg score ${s.avgScore}%` : plural(s.count, 'business', 'businesses'))).join('')}
           </div>
 
-          <div class="card">
-            <span class="snapshot-label">Breakdown by Region</span>
-            ${insights.regionBreakdown.map(r => barRow(r.region, r.pct, `${plural(r.count, 'business', 'businesses')} · biggest gap: ${t(r.topGap)} · avg ${r.avgScore}%`)).join('')}
-          </div>
+          ${insights.regionBreakdown ? `
+            <div class="card">
+              <span class="snapshot-label">Breakdown by Region</span>
+              ${insights.regionBreakdown.map(r => barRow(r.region, r.pct, `${plural(r.count, 'business', 'businesses')} · biggest gap: ${t(r.topGap)} · avg ${r.avgScore}%`)).join('')}
+            </div>` : ''}
 
           ${insights.noticeBreakdown.length ? `
             <div class="card">
@@ -216,19 +343,24 @@ function renderDashboard() {
               </div>
               <div>
                 <p class="question-note">Channel</p>
-                ${insights.channelSplit.map(c => barRow(CHANNEL_LABEL[c.channel], c.pct)).join('')}
+                ${insights.channelSplit.map(c => barRow(CHANNEL_LABEL[c.channel] ?? c.channel, c.pct)).join('')}
               </div>
             </div>
           </div>
 
-          <div class="card">
-            <span class="snapshot-label">Benefits Eligibility Snapshot</span>
-            <div class="benefit"><b>✓</b> ${insights.benefitsSnapshot.presumptiveEligiblePct}% are eligible for the presumptive tax exemption/flat rate</div>
-            <div class="benefit"><b>?</b> ${insights.benefitsSnapshot.growthCheckPct}% are worth checking for growth resources</div>
-          </div>
+          ${insights.benefitsSnapshot ? `
+            <div class="card">
+              <span class="snapshot-label">Benefits Eligibility Snapshot</span>
+              <div class="benefit"><b>✓</b> ${insights.benefitsSnapshot.presumptiveEligiblePct}% are eligible for the presumptive tax exemption/flat rate</div>
+              <div class="benefit"><b>?</b> ${insights.benefitsSnapshot.growthCheckPct}% are worth checking for growth resources</div>
+            </div>` : ''}
         </div>
 
-        <p class="legal-note footer-note">This is synthetic demo data (generated, not real people) showing the kind of insight the Analytics Engine would give TRA. Access to any individual case requires a logged reason — see Functional Specification §9–§10.</p>
+        ${liveMode ? `
+          <p class="legal-note footer-note">This is real, anonymized aggregate data from the citizen app. Region, notice types, chat topics, and benefits eligibility aren't collected by the citizen app's telemetry yet, so those breakdowns aren't shown here. Access to any individual case requires a logged reason — see Functional Specification §9–§10.</p>
+        ` : `
+          <p class="legal-note footer-note">This is synthetic demo data (generated, not real people) shown because there's no real activity yet — it disappears the moment real guidance sessions start arriving. Access to any individual case requires a logged reason — see Functional Specification §9–§10.</p>
+        `}
       </main>
     </div>`;
 }
@@ -241,6 +373,12 @@ function render() {
   document.getElementById('app').innerHTML = session ? renderDashboard() : renderLogin();
 }
 
+async function refreshAndRender() {
+  document.getElementById('app').innerHTML = renderLoading();
+  await loadInsights();
+  render();
+}
+
 function attachEvents() {
   document.addEventListener('submit', (e) => {
     if (e.target && e.target.id === 'loginForm') {
@@ -248,7 +386,7 @@ function attachEvents() {
       const userInput = document.getElementById('loginUser');
       const username = (userInput?.value ?? '').trim() || 'officer.demo';
       session = { username };
-      render();
+      refreshAndRender();
     }
   });
 
@@ -259,8 +397,7 @@ function attachEvents() {
       return;
     }
     if (e.target.closest('#flagReset')) {
-      resetInsights();
-      render();
+      refreshAndRender();
     }
   });
 }
