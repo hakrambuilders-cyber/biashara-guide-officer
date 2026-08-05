@@ -163,12 +163,15 @@ async function fetchLiveInsights() {
   };
 }
 
-// Tries live data first; falls back to a zeroed synthetic sample. This is
-// also what the flag-camouflaged sidebar control re-runs: in live mode that
-// means "check for real activity again" (never destructive — the anon key
-// can only insert, never delete/update, see supabase-setup.sql), in
-// fallback mode it means the demo sample goes to 0/empty.
-async function loadInsights() {
+// Tries live data first. Falls back to synthetic — a normal *populated*
+// demo sample on first load (so the console never looks broken just
+// because Supabase is unreachable or not set up yet), or a *zeroed* sample
+// when explicitly reset (isReset: true), which is what the flag-
+// camouflaged sidebar control does on every click after the first. In live
+// mode a click just means "check for real activity again" — never
+// destructive, the anon key can only insert, never delete/update (see
+// supabase-setup.sql).
+async function loadInsights({ isReset = false } = {}) {
   try {
     const live = await fetchLiveInsights();
     if (live) {
@@ -177,10 +180,10 @@ async function loadInsights() {
       return;
     }
   } catch {
-    // Network error, CORS issue, or Supabase not set up yet — fall back below.
+    // Network error, CORS issue, or Supabase not set up/reachable — fall back below.
   }
   liveMode = false;
-  insightsCache = buildTRAInsights(generateMockPopulation(0));
+  insightsCache = buildTRAInsights(generateMockPopulation(isReset ? 0 : undefined));
 }
 
 // Small inline Tanzania flag — used instead of the 🇹🇿 emoji, which several
@@ -388,9 +391,9 @@ function render() {
   document.getElementById('app').innerHTML = session ? renderDashboard() : renderLogin();
 }
 
-async function refreshAndRender() {
+async function refreshAndRender(options) {
   document.getElementById('app').innerHTML = renderLoading();
-  await loadInsights();
+  await loadInsights(options);
   render();
 }
 
@@ -401,7 +404,7 @@ function attachEvents() {
       const userInput = document.getElementById('loginUser');
       const username = (userInput?.value ?? '').trim() || 'officer.demo';
       session = { username };
-      refreshAndRender();
+      refreshAndRender(); // first load: populated demo fallback if no live data
     }
   });
 
@@ -412,7 +415,7 @@ function attachEvents() {
       return;
     }
     if (e.target.closest('#flagReset')) {
-      refreshAndRender();
+      refreshAndRender({ isReset: true }); // explicit reset: zero out if still no live data
     }
   });
 }
