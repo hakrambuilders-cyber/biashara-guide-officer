@@ -307,6 +307,18 @@ h1, h2, h3, p { margin: 0; }
   font-size: 11px;
   letter-spacing: 0.04em;
 }
+.officer-chip.offline { background: var(--danger); }
+
+.offline-banner {
+  background: var(--danger-bg);
+  color: var(--danger);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  font-size: 13px;
+  font-weight: 700;
+  margin-bottom: 18px;
+}
 
 .kpi-grid {
   display: grid;

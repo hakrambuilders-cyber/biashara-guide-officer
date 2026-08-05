@@ -17,14 +17,21 @@
  * with no shared build step. If they ever drift, the citizen repo is the
  * source of truth.
  *
- * Live data: this console first tries to fetch real, anonymized aggregate
+ * Live data: this console always tries to fetch real, anonymized aggregate
  * stats from Supabase (see ../supabase-setup.sql) — the same store the
- * citizen app writes one anonymized event to per session
- * (engine/telemetry.js there). If there is no real activity yet (or the
- * fetch fails), it falls back to the synthetic demo population so the
- * dashboard is never just blank. The anon key below is meant to be public —
- * see supabase-setup.sql for why it can only insert/read aggregates, never
- * a raw record.
+ * citizen app writes anonymized events to (engine/telemetry.js there).
+ * There are exactly three states, each labeled distinctly so they can
+ * never be mistaken for one another:
+ *   1. LIVE DATA — connected, real activity exists.
+ *   2. LIVE — NO ACTIVITY YET — connected, database genuinely has 0 rows
+ *      (e.g. right after clearing it for testing). Shown as real zeros,
+ *      not synthetic data.
+ *   3. OFFLINE / EXAMPLE DATA — the fetch itself failed (Supabase
+ *      unreachable, paused, misconfigured). Only *this* state shows the
+ *      synthetic sample, with a loud, differently-colored warning so it's
+ *      never confused with state 2.
+ * The anon key below is meant to be public — see supabase-setup.sql for
+ * why it can only insert/read aggregates, never a raw record.
  */
 
 import { generateMockPopulation, buildTRAInsights } from './engine/analytics.js';
@@ -68,10 +75,11 @@ const GAP_KEY_LABEL = {
 
 let session = null; // { username } — in-memory only, resets on reload by design
 let insightsCache = null;
-let liveMode = false;
+let dataState = 'offline'; // 'live' | 'offline' — see the three-state note above
 
 // ---------------------------------------------------------------------------
-// Live data (Supabase) — falls back to synthetic if empty or unreachable
+// Live data (Supabase) — real data whenever the connection works, even if
+// the count is genuinely 0; synthetic only when the connection itself fails
 // ---------------------------------------------------------------------------
 
 async function callRpc(fn) {
@@ -95,15 +103,15 @@ async function fetchLiveInsights() {
   ]);
 
   const total = Number(overviewRows[0]?.total ?? 0);
-  if (!total) return null; // no real profile activity yet — let the caller fall back to synthetic
-  // (real chat-only activity with zero profile activity is treated as "not
-  // live yet" for simplicity — the core dashboard has nothing else real to
-  // show in that case; see README "known gaps")
+  // No early return here on total === 0: a successful, empty fetch is a
+  // real, connected state (see the three-state note above), not a reason
+  // to fall back to synthetic data.
 
-  // Fetched independently: an older database that hasn't had chat_events /
-  // get_chat_topic_breakdown added yet (see supabase-setup.sql) must not
-  // break the rest of the live dashboard — it should just show no chat
-  // breakdown until that migration is run.
+  // Fetched independently and tolerant of its own failure: an older
+  // database that hasn't had chat_events / get_chat_topic_breakdown added
+  // yet (see supabase-setup.sql) must not break the rest of the live
+  // dashboard — it should just show no chat breakdown until that
+  // migration is run.
   const chatRows = await callRpc('get_chat_topic_breakdown').catch(() => []);
 
   const chatTopicBreakdown = chatRows.map((r) => ({
@@ -163,27 +171,21 @@ async function fetchLiveInsights() {
   };
 }
 
-// Tries live data first. Falls back to synthetic — a normal *populated*
-// demo sample on first load (so the console never looks broken just
-// because Supabase is unreachable or not set up yet), or a *zeroed* sample
-// when explicitly reset (isReset: true), which is what the flag-
-// camouflaged sidebar control does on every click after the first. In live
-// mode a click just means "check for real activity again" — never
-// destructive, the anon key can only insert, never delete/update (see
-// supabase-setup.sql).
-async function loadInsights({ isReset = false } = {}) {
+// Always tries live data. Only a genuine fetch failure (network/CORS,
+// Supabase paused or unreachable, tables not set up yet) falls back to the
+// synthetic sample — and that fallback is always the same populated demo,
+// never a zeroed one, so "no live connection" always looks the same
+// regardless of when/why it happens. The flag-camouflaged sidebar control
+// just re-runs this — never destructive, the anon key can only insert,
+// never delete/update (see supabase-setup.sql).
+async function loadInsights() {
   try {
-    const live = await fetchLiveInsights();
-    if (live) {
-      liveMode = true;
-      insightsCache = live;
-      return;
-    }
+    insightsCache = await fetchLiveInsights();
+    dataState = 'live';
   } catch {
-    // Network error, CORS issue, or Supabase not set up/reachable — fall back below.
+    dataState = 'offline';
+    insightsCache = buildTRAInsights(generateMockPopulation());
   }
-  liveMode = false;
-  insightsCache = buildTRAInsights(generateMockPopulation(isReset ? 0 : undefined));
 }
 
 // Small inline Tanzania flag — used instead of the 🇹🇿 emoji, which several
@@ -279,16 +281,21 @@ function renderDashboard() {
       </aside>
 
       <main class="officer-main">
-        <h1>National Analytics Overview <span class="chip officer-chip">${liveMode ? 'LIVE DATA' : 'DEMO DATA'}</span></h1>
-        <p class="lead">${liveMode
-          ? `Aggregate data from ${plural(insights.overview.total, 'real, anonymized guidance session', 'real, anonymized guidance sessions')} — no individual name or case data appears here, by design.`
-          : `No real activity yet — showing a synthetic sample of ${insights.overview.total} simulated businesses so the dashboard isn't empty.`}</p>
+        ${dataState === 'offline' ? `
+          <div class="offline-banner">⚠️ Can't reach the database right now — everything below is example data, not real activity. See README "Troubleshooting."</div>
+        ` : ''}
+        <h1>National Analytics Overview <span class="chip officer-chip ${dataState}">${dataState === 'live' ? 'LIVE DATA' : '⚠️ OFFLINE — EXAMPLE DATA'}</span></h1>
+        <p class="lead">${dataState === 'live'
+          ? (insights.overview.total > 0
+              ? `Aggregate data from ${plural(insights.overview.total, 'real, anonymized guidance session', 'real, anonymized guidance sessions')} — no individual name or case data appears here, by design.`
+              : `Connected to the real database — no guidance sessions recorded yet. These are genuine zeros, not placeholder data.`)
+          : `The live database could not be reached, so this is a synthetic example of ${insights.overview.total} simulated businesses, not real activity.`}</p>
         <p class="snapshot-time">Data snapshot generated ${timeAgo(insights.generatedAt)}</p>
 
         <div class="kpi-grid">
           <div class="kpi-tile">
             <span class="kpi-value">${insights.overview.total}</span>
-            <span class="kpi-label">${liveMode ? 'Businesses (real)' : 'Businesses (mock)'}</span>
+            <span class="kpi-label">${dataState === 'live' ? 'Businesses (real)' : 'Businesses (example)'}</span>
           </div>
           <div class="kpi-tile">
             <span class="kpi-value">${insights.overview.avgComplianceScore}%</span>
@@ -374,10 +381,10 @@ function renderDashboard() {
             </div>` : ''}
         </div>
 
-        ${liveMode ? `
+        ${dataState === 'live' ? `
           <p class="legal-note footer-note">This is real, anonymized aggregate data from the citizen app. Region, notice types, and benefits eligibility aren't collected by the citizen app's telemetry yet, so those breakdowns aren't shown here. Access to any individual case requires a logged reason — see Functional Specification §9–§10.</p>
         ` : `
-          <p class="legal-note footer-note">This is synthetic demo data (generated, not real people) shown because there's no real activity yet — it disappears the moment real guidance sessions start arriving. Access to any individual case requires a logged reason — see Functional Specification §9–§10.</p>
+          <p class="legal-note footer-note">This is synthetic example data (generated, not real people) shown only because the live database couldn't be reached — it is never shown when the database is reachable, even if it's genuinely empty. Access to any individual case requires a logged reason — see Functional Specification §9–§10.</p>
         `}
       </main>
     </div>`;
@@ -391,9 +398,9 @@ function render() {
   document.getElementById('app').innerHTML = session ? renderDashboard() : renderLogin();
 }
 
-async function refreshAndRender(options) {
+async function refreshAndRender() {
   document.getElementById('app').innerHTML = renderLoading();
-  await loadInsights(options);
+  await loadInsights();
   render();
 }
 
@@ -404,7 +411,7 @@ function attachEvents() {
       const userInput = document.getElementById('loginUser');
       const username = (userInput?.value ?? '').trim() || 'officer.demo';
       session = { username };
-      refreshAndRender(); // first load: populated demo fallback if no live data
+      refreshAndRender();
     }
   });
 
@@ -415,7 +422,7 @@ function attachEvents() {
       return;
     }
     if (e.target.closest('#flagReset')) {
-      refreshAndRender({ isReset: true }); // explicit reset: zero out if still no live data
+      refreshAndRender(); // just re-checks live data; never destructive (anon key has no delete/update rights)
     }
   });
 }
