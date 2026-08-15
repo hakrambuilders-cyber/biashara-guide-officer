@@ -12,6 +12,7 @@
  */
 
 import { copy, SECTORS, NUMBER_UNITS, FAQS, NOTICES } from './knowledge.js';
+import { currentRules } from './regulatory.js';
 
 // ---------------------------------------------------------------------------
 // Free-text parsing (sector + Swahili/English sales figures)
@@ -71,35 +72,37 @@ export function sectorName(key) {
 // ---------------------------------------------------------------------------
 
 export function calculateTRAPresumptiveTax(dailyTurnover) {
+  const rules = currentRules();
+  const bands = rules.presumptiveTax.bands;
   const annualTurnover = dailyTurnover * 365;
   let annualTax = 0;
   let bracketInfo = '';
   let isExempt = false;
   let isOverLimit = false;
 
-  if (annualTurnover < 4000000) {
+  if (annualTurnover <= bands[0].upTo) {
     annualTax = 0;
     bracketInfo = 'Chini ya TSh 4 Million (Inasamehewa Kodi)';
     isExempt = true;
-  } else if (annualTurnover <= 7000000) {
-    annualTax = 100000;
+  } else if (annualTurnover <= bands[1].upTo) {
+    annualTax = bands[1].incompleteRecordsTax;
     bracketInfo = 'TSh 4M - 7M (Kiwango Maalum: TSh 100,000 kwa mwaka)';
-  } else if (annualTurnover <= 11000000) {
-    annualTax = 250000;
+  } else if (annualTurnover <= bands[2].upTo) {
+    annualTax = bands[2].incompleteRecordsTax;
     bracketInfo = 'TSh 7M - 11M (Kiwango Maalum: TSh 250,000 kwa mwaka)';
-  } else if (annualTurnover <= 100000000) {
-    annualTax = Math.round(annualTurnover * 0.035);
-    bracketInfo = 'TSh 11M - 100M (3.5% ya mauzo yote ya mwaka)';
+  } else if (annualTurnover <= rules.presumptiveTax.annualTurnoverCap) {
+    annualTax = Math.round(annualTurnover * bands[3].incompleteRecordsRate);
+    bracketInfo = 'TSh 11M - 200M (4% ya mauzo yote ya mwaka kwa kumbukumbu zisizokamilika)';
   } else {
     annualTax = null;
-    bracketInfo = 'Zaidi ya TSh 100M: Biashara haiko kwenye kundi la Presumptive Tax.';
+    bracketInfo = 'Zaidi ya TSh 200M: Biashara haiko kwenye kundi la Presumptive Tax.';
     isOverLimit = true;
   }
 
   const quarterlyTax = annualTax !== null ? Math.round(annualTax / 4) : null;
-  const efdRequired = annualTurnover >= 14000000;
+  const efdRequired = annualTurnover >= rules.efd.annualTurnoverThreshold;
 
-  return { dailyTurnover, annualTurnover, annualTax, quarterlyTax, bracketInfo, isExempt, isOverLimit, efdRequired };
+  return { dailyTurnover, annualTurnover, annualTax, quarterlyTax, bracketInfo, isExempt, isOverLimit, efdRequired, rulesetId: rules.id, rulesVerifiedAt: rules.appliesAsOf };
 }
 
 export function checkForFAQ(text) {
@@ -127,16 +130,17 @@ function estimatedAnnualTurnover(profile) {
 }
 
 function flags(profile) {
+  const rules = currentRules();
   const registrations = profile.registrations ?? [];
   const sector = profile.business && profile.business !== 'OTHER' ? SECTORS[profile.business] : null;
   const annualEstimate = estimatedAnnualTurnover(profile);
   return {
     hasTin: registrations.includes('tin'),
     hasBusinessRegistration: registrations.includes('businessRegistration'),
-    hasLicence: registrations.includes('licence'),
+    hasLicence: registrations.includes('licence') && registrations.includes('tin'),
     sector,
     isNew: profile.stage === 'mpya',
-    efdLikelyRequired: (sector?.efdSensitive ?? true) && annualEstimate !== null && annualEstimate >= 14000000,
+    efdLikelyRequired: (sector?.efdSensitive ?? true) && annualEstimate !== null && annualEstimate >= rules.efd.annualTurnoverThreshold,
     annualEstimate
   };
 }
@@ -200,8 +204,8 @@ export function computeRisk(profile) {
 
   if (f.efdLikelyRequired) {
     notes.push(copy(
-      'Kwa kiwango hiki cha mauzo, mashine ya EFD huenda inahitajika kisheria (kuanzia TSh Milioni 14/mwaka).',
-      'At this sales level, an EFD machine is likely legally required (threshold: TSh 14 Million/year).'
+      'Kwa kiwango hiki cha mauzo, mashine ya EFD/VFD huenda inahitajika (kiwango cha sasa kinachoonyeshwa na TRA: TSh Milioni 11 kwa mwaka).',
+      'At this sales level, an EFD/VFD may be required (current threshold shown by TRA: TSh 11 Million/year).'
     ));
   }
 
@@ -314,7 +318,7 @@ export function getBenefits(profile) {
   const items = [
     {
       title: copy('Msamaha/kiwango maalum cha kodi ya makadirio', 'Presumptive tax exemption / flat rate'),
-      description: copy('Biashara ndogo zenye mauzo chini ya TSh 4M/mwaka hazitozwi kodi; zile hadi TSh 100M hulipa kiwango kilichowekwa.', 'Small businesses under TSh 4M/year owe no tax; those up to TSh 100M pay a set simplified rate.'),
+      description: copy('Biashara ndogo zenye mauzo chini ya TSh 4M/mwaka hazitozwi kodi; biashara zinazostahili hadi TSh 200M hutumia viwango vya mfumo wa kodi ya makadirio vinavyoonyeshwa na TRA.', 'Small businesses under TSh 4M/year owe no tax; qualifying businesses up to TSh 200M use the presumptive-tax rates currently shown by TRA.'),
       status: profile.sales ? 'eligible' : 'explore'
     },
     {

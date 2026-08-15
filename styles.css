@@ -1,9 +1,8 @@
-/* TRA Officer Console — standalone stylesheet.
-   This is a genuinely separate deployment from the citizen app (see
-   https://github.com/hakrambuilders-cyber/biashara-guide.v2), so this file
-   is self-contained: shared tokens/components below are kept in sync by
-   hand with that repo's styles.css, followed by this console's own
-   desktop-oriented layout (login screen, sidebar, dashboard grid). */
+/* Biashara Guide Insights — officer-view stylesheet.
+   The local comparison keeps this surface self-contained so the citizen and
+   officer experiences can be tested independently. Shared tokens/components
+   below stay aligned with the citizen styles, followed by the desktop-oriented
+   officer layout (login screen, sidebar, dashboard grid). */
 
 :root {
   --primary: #F9E50F;
@@ -181,6 +180,8 @@ h1, h2, h3, p { margin: 0; }
 .login-panel .brand-mark { margin: 0 auto; }
 .login-panel h1 { margin-top: 18px; font-size: 22px; }
 .login-sub { color: var(--muted); font-size: 13.5px; margin-top: 8px; line-height: 1.5; }
+.platform-kicker { display: inline-block; color: #7A6800; background: var(--primary-tint); border: 1px solid #F0E6A1; border-radius: 999px; padding: 5px 9px; font-size: 10px; line-height: 1; font-weight: 800; letter-spacing: .06em; margin-bottom: 6px; }
+.integration-note { margin-top: 16px; padding: 12px 14px; border-left: 3px solid var(--primary); background: var(--primary-tint); color: #514B2E; text-align: left; font-size: 11.5px; line-height: 1.5; border-radius: 0 8px 8px 0; }
 
 .login-form {
   display: flex;
@@ -261,6 +262,7 @@ h1, h2, h3, p { margin: 0; }
 .flag-reset svg { width: 22px; height: auto; display: block; border-radius: 3px; }
 .flag-reset:hover { opacity: 1; background: rgba(255,255,255,0.08); }
 .sidebar-title { font-weight: 800; font-size: 15px; line-height: 1.3; }
+.sidebar-context { color: rgba(255,255,255,.52); font-size: 11px; margin-top: 3px; }
 .sidebar-session {
   background: rgba(255,255,255,0.08);
   border-radius: 10px;
@@ -280,6 +282,17 @@ h1, h2, h3, p { margin: 0; }
   font-size: 13px;
   padding: 0;
 }
+.sidebar-nav-link {
+  color: #fff;
+  text-decoration: none;
+  border: 1px solid rgba(255,255,255,.18);
+  background: rgba(255,255,255,.08);
+  border-radius: 9px;
+  padding: 10px 12px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.sidebar-nav-link:hover { background: rgba(255,255,255,.14); }
 .sidebar-note {
   margin-top: auto;
   border-top: 1px dashed rgba(255,255,255,0.2);
@@ -306,18 +319,6 @@ h1, h2, h3, p { margin: 0; }
   color: #fff;
   font-size: 11px;
   letter-spacing: 0.04em;
-}
-.officer-chip.offline { background: var(--danger); }
-
-.offline-banner {
-  background: var(--danger-bg);
-  color: var(--danger);
-  border: 1px solid var(--danger);
-  border-radius: var(--radius-sm);
-  padding: 12px 14px;
-  font-size: 13px;
-  font-weight: 700;
-  margin-bottom: 18px;
 }
 
 .kpi-grid {
@@ -365,6 +366,51 @@ h1, h2, h3, p { margin: 0; }
 
 .legal-note.footer-note { margin-top: 30px; max-width: 800px; }
 
+/* --- Regulatory update register ----------------------------------------- */
+
+.regulatory-section {
+  margin-top: 34px;
+  padding-top: 30px;
+  border-top: 1px solid var(--border);
+  scroll-margin-top: 54px;
+}
+.section-heading-row { display: flex; justify-content: space-between; gap: 24px; align-items: flex-start; }
+.section-heading-row h2 { font-size: 23px; margin: 2px 0 8px; }
+.section-heading-row .lead { max-width: 720px; color: var(--muted); font-size: 14px; line-height: 1.55; }
+.registry-version {
+  min-width: 260px;
+  background: var(--secondary);
+  color: #fff;
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.registry-version span, .registry-version small { color: rgba(255,255,255,.62); font-size: 11px; }
+.registry-version strong { font-size: 14px; }
+.rule-summary-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 20px; }
+.rule-summary { background: var(--primary-tint); border: 1px solid #eee39a; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 5px; }
+.rule-summary span { color: #6b6030; font-size: 11px; }
+.rule-summary b { color: var(--secondary); font-size: 16px; }
+.register-list { display: grid; gap: 14px; margin-top: 18px; }
+.register-entry { background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--success); border-radius: var(--radius-md); padding: 18px; box-shadow: var(--shadow-card); }
+.register-entry.status-active-reference { border-left-color: #487fb3; }
+.register-entry.status-replaced { border-left-color: #9aa5ae; background: #fafbfc; }
+.register-entry-top { display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; }
+.register-id { color: var(--muted); text-transform: uppercase; letter-spacing: .05em; font-size: 10px; font-weight: 800; }
+.register-entry h3 { margin-top: 5px; font-size: 16px; }
+.register-status { white-space: nowrap; font-size: 10px; font-weight: 800; color: var(--success); background: var(--success-bg); border-radius: 999px; padding: 6px 9px; }
+.status-active-reference .register-status { color: #2f679d; background: #eaf3fb; }
+.status-replaced .register-status { color: #64727d; background: #edf0f2; }
+.register-meta { display: grid; grid-template-columns: 1fr 1fr 2fr; gap: 14px; margin: 15px 0 12px; }
+.register-meta div { margin: 0; }
+.register-meta dt { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
+.register-meta dd { margin: 4px 0 0; font-size: 12px; line-height: 1.4; }
+.register-entry > p { font-size: 13px; line-height: 1.5; }
+.approval-note { color: var(--muted); margin-top: 8px; }
+.source-link { display: inline-block; margin-top: 10px; color: #5b4b00; font-size: 12px; font-weight: 700; }
+
 @media (max-width: 900px) {
   .officer-app { grid-template-columns: 1fr; }
   .officer-sidebar {
@@ -377,4 +423,7 @@ h1, h2, h3, p { margin: 0; }
   .sidebar-note { margin-top: 12px; width: 100%; }
   .officer-main { padding: 28px 24px 48px; }
   .kpi-grid { grid-template-columns: 1fr 1fr; }
+  .section-heading-row { flex-direction: column; }
+  .registry-version { width: 100%; min-width: 0; }
+  .rule-summary-grid, .register-meta { grid-template-columns: 1fr; }
 }

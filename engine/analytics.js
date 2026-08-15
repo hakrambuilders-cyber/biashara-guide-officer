@@ -17,6 +17,7 @@
  */
 
 import { copy, SECTORS } from './knowledge.js';
+import { currentRules } from './regulatory.js';
 import { computeComplianceScore, computeRisk, getNextBestActions, getBenefits, SALES_ANNUAL_ESTIMATE } from './core.js';
 
 // ---------------------------------------------------------------------------
@@ -45,11 +46,15 @@ function weightedPick(rng, items) {
 }
 
 const SECTOR_WEIGHTS = [
-  { value: 'CHAKULA', weight: 28 },
-  { value: 'REJAREJA', weight: 30 },
-  { value: 'USAFIRI', weight: 16 },
-  { value: 'UREMBO', weight: 14 },
-  { value: 'UFUNDI', weight: 12 }
+  { value: 'REJAREJA', weight: 26 },
+  { value: 'CHAKULA', weight: 20 },
+  { value: 'UFUNDI', weight: 12 },
+  { value: 'USAFIRI', weight: 10 },
+  { value: 'UREMBO', weight: 8 },
+  { value: 'KILIMO', weight: 8 },
+  { value: 'UZALISHAJI', weight: 6 },
+  { value: 'WAKALA', weight: 5 },
+  { value: 'HUDUMA', weight: 5 }
 ];
 const STAGE_WEIGHTS = [
   { value: 'mpya', weight: 30 },
@@ -267,7 +272,7 @@ export function buildTRAInsights(population) {
   // from estimated turnover so the rare above-cap outliers (see
   // generateMockPopulation) actually show up instead of a flat 100%.
   const benefitsSnapshot = {
-    presumptiveEligiblePct: pct(scored.filter((s) => s.estimatedAnnualTurnover <= 100000000).length, n),
+    presumptiveEligiblePct: pct(scored.filter((s) => s.estimatedAnnualTurnover <= currentRules().presumptiveTax.annualTurnoverCap).length, n),
     growthCheckPct: pct(scored.filter((s) => s.benefits.items[3].status === 'check').length, n)
   };
 

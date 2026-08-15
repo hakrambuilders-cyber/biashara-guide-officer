@@ -1,11 +1,9 @@
 /**
- * TRA Officer Console — a standalone app, deliberately published as its own
- * repository/site rather than a screen or path inside the citizen app
- * (see https://github.com/hakrambuilders-cyber/biashara-guide.v2). Separate
- * persona, separate device assumption (desktop, not mobile-first), separate
- * login gate — reflecting the RBAC model in that project's
- * docs/FUNCTIONAL_SPEC.md §9 (officers authenticate; citizens don't). The
- * citizen app has no link to this console at all.
+ * Biashara Guide Insights — the officer-facing aggregate insight surface of
+ * the same guidance layer used by the citizen journey. It keeps a separate
+ * desktop device assumption and login gate to reflect the RBAC model in the
+ * citizen project's docs/FUNCTIONAL_SPEC.md §9 (officers authenticate;
+ * citizens don't), without positioning Biashara Guide as another citizen app.
  *
  * The login here is a simulation only: no real authentication exists in
  * this prototype. It exists to make the access boundary visible in the
@@ -17,25 +15,19 @@
  * with no shared build step. If they ever drift, the citizen repo is the
  * source of truth.
  *
- * Live data: this console always tries to fetch real, anonymized aggregate
+ * Live data: this console first tries to fetch real, anonymized aggregate
  * stats from Supabase (see ../supabase-setup.sql) — the same store the
- * citizen app writes anonymized events to (engine/telemetry.js there).
- * There are exactly three states, each labeled distinctly so they can
- * never be mistaken for one another:
- *   1. LIVE DATA — connected, real activity exists.
- *   2. LIVE — NO ACTIVITY YET — connected, database genuinely has 0 rows
- *      (e.g. right after clearing it for testing). Shown as real zeros,
- *      not synthetic data.
- *   3. OFFLINE / EXAMPLE DATA — the fetch itself failed (Supabase
- *      unreachable, paused, misconfigured). Only *this* state shows the
- *      synthetic sample, with a loud, differently-colored warning so it's
- *      never confused with state 2.
- * The anon key below is meant to be public — see supabase-setup.sql for
- * why it can only insert/read aggregates, never a raw record.
+ * citizen app writes one anonymized event to per session
+ * (engine/telemetry.js there). If there is no real activity yet (or the
+ * fetch fails), it falls back to the synthetic demo population so the
+ * dashboard is never just blank. The anon key below is meant to be public —
+ * see supabase-setup.sql for why it can only insert/read aggregates, never
+ * a raw record.
  */
 
 import { generateMockPopulation, buildTRAInsights } from './engine/analytics.js';
 import { SECTORS } from './engine/knowledge.js';
+import { ACTIVE_RULES, REGISTRY_META, REGULATORY_REGISTER } from './engine/regulatory.js';
 import { brandMarkSvg } from './brand.js';
 
 const SUPABASE_URL = 'https://fintumxfjtzvxmscdtdj.supabase.co';
@@ -75,11 +67,10 @@ const GAP_KEY_LABEL = {
 
 let session = null; // { username } — in-memory only, resets on reload by design
 let insightsCache = null;
-let dataState = 'offline'; // 'live' | 'offline' — see the three-state note above
+let liveMode = false;
 
 // ---------------------------------------------------------------------------
-// Live data (Supabase) — real data whenever the connection works, even if
-// the count is genuinely 0; synthetic only when the connection itself fails
+// Live data (Supabase) — falls back to synthetic if empty or unreachable
 // ---------------------------------------------------------------------------
 
 async function callRpc(fn) {
@@ -103,15 +94,15 @@ async function fetchLiveInsights() {
   ]);
 
   const total = Number(overviewRows[0]?.total ?? 0);
-  // No early return here on total === 0: a successful, empty fetch is a
-  // real, connected state (see the three-state note above), not a reason
-  // to fall back to synthetic data.
+  if (!total) return null; // no real profile activity yet — let the caller fall back to synthetic
+  // (real chat-only activity with zero profile activity is treated as "not
+  // live yet" for simplicity — the core dashboard has nothing else real to
+  // show in that case; see README "known gaps")
 
-  // Fetched independently and tolerant of its own failure: an older
-  // database that hasn't had chat_events / get_chat_topic_breakdown added
-  // yet (see supabase-setup.sql) must not break the rest of the live
-  // dashboard — it should just show no chat breakdown until that
-  // migration is run.
+  // Fetched independently: an older database that hasn't had chat_events /
+  // get_chat_topic_breakdown added yet (see supabase-setup.sql) must not
+  // break the rest of the live dashboard — it should just show no chat
+  // breakdown until that migration is run.
   const chatRows = await callRpc('get_chat_topic_breakdown').catch(() => []);
 
   const chatTopicBreakdown = chatRows.map((r) => ({
@@ -171,21 +162,24 @@ async function fetchLiveInsights() {
   };
 }
 
-// Always tries live data. Only a genuine fetch failure (network/CORS,
-// Supabase paused or unreachable, tables not set up yet) falls back to the
-// synthetic sample — and that fallback is always the same populated demo,
-// never a zeroed one, so "no live connection" always looks the same
-// regardless of when/why it happens. The flag-camouflaged sidebar control
-// just re-runs this — never destructive, the anon key can only insert,
-// never delete/update (see supabase-setup.sql).
+// Tries live data first; falls back to a clearly-labelled synthetic sample. This is
+// also what the flag-camouflaged sidebar control re-runs: in live mode that
+// means "check for real activity again" (never destructive — the anon key
+// can only insert, never delete/update, see supabase-setup.sql), in
+// fallback mode it regenerates the labelled synthetic sample.
 async function loadInsights() {
   try {
-    insightsCache = await fetchLiveInsights();
-    dataState = 'live';
+    const live = await fetchLiveInsights();
+    if (live) {
+      liveMode = true;
+      insightsCache = live;
+      return;
+    }
   } catch {
-    dataState = 'offline';
-    insightsCache = buildTRAInsights(generateMockPopulation());
+    // Network error, CORS issue, or Supabase not set up yet — fall back below.
   }
+  liveMode = false;
+  insightsCache = buildTRAInsights(generateMockPopulation(240));
 }
 
 // Small inline Tanzania flag — used instead of the 🇹🇿 emoji, which several
@@ -231,6 +225,63 @@ function barRow(label, percent, sublabel) {
     </div>`;
 }
 
+function formatDate(value) {
+  if (!value) return 'Current rule; commencement date to be confirmed in legal review';
+  return new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${value}T00:00:00Z`));
+}
+
+function renderRegulatoryRegister() {
+  const statusLabel = {
+    active: 'ACTIVE IN ENGINE',
+    'active-reference': 'ACTIVE REFERENCE',
+    replaced: 'REPLACED'
+  };
+  return `
+    <section class="regulatory-section" id="regulatory-register" aria-labelledby="regulatory-heading">
+      <div class="section-heading-row">
+        <div>
+          <span class="platform-kicker">INTERNAL GOVERNANCE · PROTOTYPE</span>
+          <h2 id="regulatory-heading">Regulatory Update Register</h2>
+          <p class="lead">The citizen journey stays short. This internal register controls which verified rules the guidance engine uses and preserves what changed.</p>
+        </div>
+        <div class="registry-version">
+          <span>Active ruleset</span>
+          <strong>${esc(ACTIVE_RULES.id)}</strong>
+          <small>Sources rechecked ${formatDate(REGISTRY_META.verifiedAt)}</small>
+        </div>
+      </div>
+
+      <div class="rule-summary-grid" aria-label="Active rule summary">
+        <div class="rule-summary"><span>Presumptive-tax ceiling</span><b>TZS 200m / year</b></div>
+        <div class="rule-summary"><span>Upper incomplete-record rate</span><b>4% of turnover</b></div>
+        <div class="rule-summary"><span>EFD/VFD turnover threshold</span><b>TZS 11m / year</b></div>
+      </div>
+
+      <div class="register-list">
+        ${REGULATORY_REGISTER.map((entry) => `
+          <article class="register-entry status-${entry.status}">
+            <div class="register-entry-top">
+              <div>
+                <span class="register-id">${esc(entry.id)} · ${esc(entry.instrumentType)}</span>
+                <h3>${esc(entry.title)}</h3>
+              </div>
+              <span class="register-status">${statusLabel[entry.status] ?? esc(entry.status)}</span>
+            </div>
+            <dl class="register-meta">
+              <div><dt>Effective from</dt><dd>${formatDate(entry.effectiveFrom)}</dd></div>
+              <div><dt>Prototype verification</dt><dd>${formatDate(entry.verifiedOn)}</dd></div>
+              <div><dt>Affected guidance</dt><dd>${entry.affectedProfiles.map(esc).join(' · ')}</dd></div>
+            </dl>
+            <p>${esc(entry.impact)}</p>
+            <p class="approval-note">${esc(entry.approval)}</p>
+            ${entry.sourceUrl ? `<a class="source-link" href="${esc(entry.sourceUrl)}" target="_blank" rel="noopener noreferrer">Open official source ↗</a>` : ''}
+          </article>
+        `).join('')}
+      </div>
+      <p class="legal-note">Governance safeguard: official-source verification in this prototype is not a claim of TRA approval. A real deployment requires authenticated legal/content approval before a rule becomes active.</p>
+    </section>`;
+}
+
 // ---------------------------------------------------------------------------
 // Screens
 // ---------------------------------------------------------------------------
@@ -240,8 +291,9 @@ function renderLogin() {
     <div class="login-screen">
       <div class="login-panel">
         <div class="brand-mark">${brandMarkSvg()}</div>
-        <h1>TRA Officer Console</h1>
-        <p class="login-sub">Aggregate analytics access for authorised TRA staff.</p>
+        <span class="platform-kicker">TRA DIGITAL SERVICES · CONCEPT</span>
+        <h1>Biashara Guide Insights</h1>
+        <p class="login-sub">Aggregate guidance patterns for authorised staff — one insight surface for Web, USSD, WhatsApp and other connected channels.</p>
         <form id="loginForm" class="login-form">
           <label>Username
             <input type="text" id="loginUser" placeholder="e.g. officer.demo" autocomplete="off" />
@@ -252,7 +304,7 @@ function renderLogin() {
           <button type="submit" class="btn btn-primary">Log In</button>
         </form>
         <p class="login-note">🧪 Demo simulation — enter any username and password; nothing is checked, validated, or stored. No real TRA authentication exists in this prototype.</p>
-        <a class="login-back" href="https://hakrambuilders-cyber.github.io/biashara-guide.v2/">← Back to citizen app</a>
+        <p class="integration-note">Citizen guidance and officer insights are two views of the same guidance layer, not two unrelated apps.</p>
       </div>
     </div>`;
 }
@@ -271,35 +323,33 @@ function renderDashboard() {
           <div class="brand-mark">${brandMarkSvg()}</div>
           <button class="flag-reset" id="flagReset" type="button" title="Refresh" aria-label="Refresh statistics">${tzFlagSvg()}</button>
         </div>
-        <div class="sidebar-title">TRA Officer Console</div>
+        <div class="sidebar-title">Biashara Guide Insights</div>
+        <div class="sidebar-context">Digital guidance layer</div>
         <div class="sidebar-session">
           <span class="session-label">Signed in as</span>
           <strong>${esc(session.username)}</strong>
         </div>
+        <a class="sidebar-nav-link" href="#regulatory-register">Regulatory updates</a>
         <button class="link-btn logout-btn" id="logoutBtn">Log out</button>
         <p class="legal-note sidebar-note">🧪 Aggregate data only — never individual case files. Case-level access requires a logged reason (Functional Specification §9–§10).</p>
       </aside>
 
       <main class="officer-main">
-        ${dataState === 'offline' ? `
-          <div class="offline-banner">⚠️ Can't reach the database right now — everything below is example data, not real activity. See README "Troubleshooting."</div>
-        ` : ''}
-        <h1>National Analytics Overview <span class="chip officer-chip ${dataState}">${dataState === 'live' ? 'LIVE DATA' : '⚠️ OFFLINE — EXAMPLE DATA'}</span></h1>
-        <p class="lead">${dataState === 'live'
-          ? (insights.overview.total > 0
-              ? `Aggregate data from ${plural(insights.overview.total, 'real, anonymized guidance session', 'real, anonymized guidance sessions')} — no individual name or case data appears here, by design.`
-              : `Connected to the real database — no guidance sessions recorded yet. These are genuine zeros, not placeholder data.`)
-          : `The live database could not be reached, so this is a synthetic example of ${insights.overview.total} simulated businesses, not real activity.`}</p>
+        <span class="platform-kicker">AGGREGATED ACROSS CONNECTED GUIDANCE CHANNELS</span>
+        <h1>National Guidance Overview <span class="chip officer-chip">${liveMode ? 'LIVE DATA' : 'DEMO DATA'}</span></h1>
+        <p class="lead">${liveMode
+          ? `Aggregate data from ${plural(insights.overview.total, 'real, anonymized business guidance snapshot', 'real, anonymized business guidance snapshots')} — these are business journeys, not a count of unique people.`
+          : `No real activity yet — showing a synthetic sample of ${insights.overview.total} simulated business guidance journeys so the dashboard isn't empty.`}</p>
         <p class="snapshot-time">Data snapshot generated ${timeAgo(insights.generatedAt)}</p>
 
         <div class="kpi-grid">
           <div class="kpi-tile">
             <span class="kpi-value">${insights.overview.total}</span>
-            <span class="kpi-label">${dataState === 'live' ? 'Businesses (real)' : 'Businesses (example)'}</span>
+            <span class="kpi-label">${liveMode ? 'Guidance snapshots (real)' : 'Guidance journeys (mock)'}</span>
           </div>
           <div class="kpi-tile">
             <span class="kpi-value">${insights.overview.avgComplianceScore}%</span>
-            <span class="kpi-label">Avg. Compliance Score</span>
+            <span class="kpi-label">Avg. Guidance Readiness</span>
           </div>
           <div class="kpi-tile ${insights.overview.highRiskShare > 30 ? 'warn' : ''}">
             <span class="kpi-value">${insights.overview.highRiskShare}%</span>
@@ -326,13 +376,14 @@ function renderDashboard() {
           </div>
 
           <div class="card">
-            <span class="snapshot-label">Biggest Compliance Gaps (National)</span>
+            <span class="snapshot-label">Most Common Guidance Gaps (National)</span>
+            <p class="question-note">Operational use: identify where clearer education, assisted service or simpler formalisation guidance may have the greatest reach.</p>
             ${insights.registrationGaps.map(g => barRow(t(g.label) || g.label, g.pct, plural(g.missing, 'business', 'businesses'))).join('')}
           </div>
 
           <div class="card">
             <span class="snapshot-label">Most Common Next-Best-Actions</span>
-            <p class="question-note">Shows where most businesses are stuck — never who they are.</p>
+            <p class="question-note">Operational use: shows which next-step guidance TRA may need to make easier or more visible — never who the businesses are.</p>
             ${insights.topNextActions.map(a => barRow(t(a.title) || a.title, a.pct, plural(a.count, 'business', 'businesses'))).join('')}
           </div>
 
@@ -381,10 +432,12 @@ function renderDashboard() {
             </div>` : ''}
         </div>
 
-        ${dataState === 'live' ? `
-          <p class="legal-note footer-note">This is real, anonymized aggregate data from the citizen app. Region, notice types, and benefits eligibility aren't collected by the citizen app's telemetry yet, so those breakdowns aren't shown here. Access to any individual case requires a logged reason — see Functional Specification §9–§10.</p>
+        ${renderRegulatoryRegister()}
+
+        ${liveMode ? `
+          <p class="legal-note footer-note">This is real, anonymized aggregate data from completed business guidance snapshots. One person may guide more than one business, so this dashboard deliberately does not present the total as unique citizens. Region, names, phone numbers and individual case profiles are not collected here.</p>
         ` : `
-          <p class="legal-note footer-note">This is synthetic example data (generated, not real people) shown only because the live database couldn't be reached — it is never shown when the database is reachable, even if it's genuinely empty. Access to any individual case requires a logged reason — see Functional Specification §9–§10.</p>
+          <p class="legal-note footer-note">This is synthetic demo data (generated, not real people) shown because there's no real activity yet — it disappears the moment real guidance sessions start arriving. Access to any individual case requires a logged reason — see Functional Specification §9–§10.</p>
         `}
       </main>
     </div>`;
@@ -422,7 +475,7 @@ function attachEvents() {
       return;
     }
     if (e.target.closest('#flagReset')) {
-      refreshAndRender(); // just re-checks live data; never destructive (anon key has no delete/update rights)
+      refreshAndRender();
     }
   });
 }
